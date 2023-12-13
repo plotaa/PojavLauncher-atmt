@@ -1,4 +1,4 @@
-name: Android CI
+name: 老的Zink Android
 
 on:
   pull_request:
