@@ -61,6 +61,7 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
         pojav_environ->mouseDownBuffer = (*pojav_environ->runtimeJNIEnvPtr_JRE)->GetDirectBufferAddress(pojav_environ->runtimeJNIEnvPtr_JRE, mouseDownBufferJ);
         hookExec();
         installLinkerBugMitigation();
+        installEMUIIteratorMititgation();
     }
 
     if(pojav_environ->dalvikJavaVMPtr == vm) {
@@ -103,6 +104,13 @@ void pojavPumpEvents(void* window) {
     // by spec, they will be called on the same thread so no synchronization here
     pojav_environ->isPumpingEvents = true;
 
+    if((pojav_environ->cLastX != pojav_environ->cursorX || pojav_environ->cLastY != pojav_environ->cursorY) && pojav_environ->GLFW_invoke_CursorPos) {
+        pojav_environ->cLastX = pojav_environ->cursorX;
+        pojav_environ->cLastY = pojav_environ->cursorY;
+        pojav_environ->GLFW_invoke_CursorPos(window, floor(pojav_environ->cursorX),
+                                             floor(pojav_environ->cursorY));
+    }
+
     size_t index = pojav_environ->outEventIndex;
     size_t targetIndex = pojav_environ->outTargetIndex;
 
@@ -137,12 +145,6 @@ void pojavPumpEvents(void* window) {
         index++;
         if (index >= EVENT_WINDOW_SIZE)
             index -= EVENT_WINDOW_SIZE;
-    }
-    if((pojav_environ->cLastX != pojav_environ->cursorX || pojav_environ->cLastY != pojav_environ->cursorY) && pojav_environ->GLFW_invoke_CursorPos) {
-        pojav_environ->cLastX = pojav_environ->cursorX;
-        pojav_environ->cLastY = pojav_environ->cursorY;
-        pojav_environ->GLFW_invoke_CursorPos(window, floor(pojav_environ->cursorX),
-                                             floor(pojav_environ->cursorY));
     }
 
     // The out target index is updated by the rewinder
@@ -294,6 +296,43 @@ void installLinkerBugMitigation() {
     }
 }
 
+/**
+ * This function is meant as a substitute for SharedLibraryUtil.getLibraryPath() that just returns 0
+ * (thus making the parent Java function return null). This is done to avoid using the LWJGL's default function,
+ * which will hang the crappy EMUI linker by dlopen()ing inside of dl_iterate_phdr().
+ * @return 0, to make the parent Java function return null immediately.
+ * For reference: https://github.com/PojavLauncherTeam/lwjgl3/blob/fix_huawei_hang/modules/lwjgl/core/src/main/java/org/lwjgl/system/SharedLibraryUtil.java
+ */
+jint getLibraryPath_fix(__attribute__((unused)) JNIEnv *env,
+                        __attribute__((unused)) jclass class,
+                        __attribute__((unused)) jlong pLibAddress,
+                        __attribute__((unused)) jlong sOutAddress,
+                        __attribute__((unused)) jint bufSize){
+    return 0;
+}
+
+/**
+ * Install the linker hang mitigation that is meant to prevent linker hangs on old EMUI firmware.
+ */
+void installEMUIIteratorMititgation() {
+    if(getenv("POJAV_EMUI_ITERATOR_MITIGATE") == NULL) return;
+    __android_log_print(ANDROID_LOG_INFO, "EMUIIteratorFix", "Installing...");
+    JNIEnv* env = pojav_environ->runtimeJNIEnvPtr_JRE;
+    jclass sharedLibraryUtil = (*env)->FindClass(env, "org/lwjgl/system/SharedLibraryUtil");
+    if(sharedLibraryUtil == NULL) {
+        __android_log_print(ANDROID_LOG_ERROR, "EMUIIteratorFix", "Failed to find the target class");
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    JNINativeMethod getLibraryPathMethod[] = {
+            {"getLibraryPath", "(JJI)I", &getLibraryPath_fix}
+    };
+    if((*env)->RegisterNatives(env, sharedLibraryUtil, getLibraryPathMethod, 1) != 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "EMUIIteratorFix", "Failed to register the mitigation method");
+        (*env)->ExceptionClear(env);
+    }
+}
+
 void critical_set_stackqueue(jboolean use_input_stack_queue) {
     pojav_environ->isUseStackQueueCall = (int) use_input_stack_queue;
 }
@@ -341,7 +380,7 @@ JNIEXPORT jboolean JNICALL JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetI
 }
 
 JNIEXPORT jboolean JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jboolean inputReady) {
-    JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(inputReady);
+    return JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(inputReady);
 }
 
 JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jboolean grabbing) {
